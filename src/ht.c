@@ -3,6 +3,8 @@
 #include "ht.h"
 
 #include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,7 +70,8 @@ static uint64_t hash_key(const char *key) {
 void *ht_get(ht *table, const char *key) {
   // AND hash with capacity-1 to ensure it's within entries array.
   uint64_t hash = hash_key(key);
-  size_t index = (size_t)(hash & (uint64_t)(table->capacity - 1));
+  size_t capacity_mask = table->capacity - 1;
+  size_t index = (size_t)(hash & (uint64_t)capacity_mask);
 
   // Loop till we find an empty entry.
   while (table->entries[index].key != NULL) {
@@ -76,12 +79,9 @@ void *ht_get(ht *table, const char *key) {
       // Found key, return value.
       return table->entries[index].value;
     }
-    // Key wasn't in this slot, move to next (linear probing).
-    index++;
-    if (index >= table->capacity) {
-      // At end of entries array, wrap around.
-      index = 0;
-    }
+    // Key wasn't in this slot, move to next (linear probing), At end of entries
+    // array, wrap around.
+    index = (index + 1) & capacity_mask;
   }
   return NULL;
 }
@@ -91,7 +91,8 @@ static const char *ht_set_entry(ht_entry *entries, size_t capacity,
                                 const char *key, void *value, size_t *plength) {
   // AND hash with capacity-1 to ensure it's within entries array.
   uint64_t hash = hash_key(key);
-  size_t index = (size_t)(hash & (uint64_t)(capacity - 1));
+  size_t capacity_mask = capacity - 1;
+  size_t index = (size_t)(hash & (uint64_t)capacity_mask);
 
   // Loop till we find an empty entry.
   while (entries[index].key != NULL) {
@@ -100,12 +101,10 @@ static const char *ht_set_entry(ht_entry *entries, size_t capacity,
       entries[index].value = value;
       return entries[index].key;
     }
-    // Key wasn't in this slot, move to next (linear probing).
-    index++;
-    if (index >= capacity) {
-      // At end of entries array, wrap around.
-      index = 0;
-    }
+
+    // Key wasn't in this slot, move to next (linear probing), At end of entries
+    // array, wrap around.
+    index = (index + 1) & capacity_mask;
   }
 
   // Didn't find key, allocate+copy if needed, then insert it.
@@ -193,7 +192,42 @@ bool ht_next(hti *it) {
   return false;
 }
 
-void ht_delete(ht *table, const char *key) {
+bool ht_delete(ht *table, const char *key) {
   uint64_t hash = hash_key(key);
-  size_t index = (size_t)(hash & (uint64_t)(table->capacity - 1));
+  size_t capacity_mask = table->capacity - 1;
+  size_t index = (size_t)(hash & (uint64_t)capacity_mask);
+
+  while (table->entries[index].key != NULL) {
+    if (strcmp(key, table->entries[index].key) == 0) {
+      break;
+    }
+    index = (index + 1) & capacity_mask;
+  }
+  if (table->entries[index].key == NULL) {
+    return false;
+  }
+  free((void *)table->entries[index].key);
+  table->length--;
+
+  table->entries[index].key = NULL;
+  table->entries[index].value = NULL;
+  size_t j = (index + 1) & capacity_mask;
+
+  while (table->entries[j].key != NULL) {
+    hash = hash_key(table->entries[j].key);
+    size_t k = (size_t)(hash & (uint64_t)capacity_mask);
+
+    size_t dist_to_hole = (index - k) & capacity_mask;
+    size_t dist_to_current = (j - k) & capacity_mask;
+    if (dist_to_hole < dist_to_current) { // shift entries back
+      table->entries[index] = table->entries[j];
+      // Make a new hole
+      table->entries[j].key = NULL;
+      table->entries[j].value = NULL;
+      index = j;
+    }
+    j = (j + 1) & capacity_mask;
+  }
+
+  return true;
 }

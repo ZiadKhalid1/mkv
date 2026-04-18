@@ -46,4 +46,6 @@ hti ht_iterator(ht* table);
 // items, return false. Don't call ht_set during iteration.
 bool ht_next(hti* it);
 
+bool ht_delete(ht* table, const char* key);
+
 #endif // _HT_H
