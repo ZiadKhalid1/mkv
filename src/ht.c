@@ -13,6 +13,7 @@
 typedef struct {
   const char *key; // key is NULL if this slot is empty
   void *value;
+  bool isFile;
 } ht_entry;
 
 // Hash table structure: create with ht_create, free with ht_destroy.
@@ -88,7 +89,8 @@ void *ht_get(ht *table, const char *key) {
 
 // Internal function to set an entry (without expanding table).
 static const char *ht_set_entry(ht_entry *entries, size_t capacity,
-                                const char *key, void *value, size_t *plength) {
+                                const char *key, void *value, size_t *plength,
+                                bool isFile) {
   // AND hash with capacity-1 to ensure it's within entries array.
   uint64_t hash = hash_key(key);
   size_t capacity_mask = capacity - 1;
@@ -99,6 +101,7 @@ static const char *ht_set_entry(ht_entry *entries, size_t capacity,
     if (strcmp(key, entries[index].key) == 0) {
       // Found key (it already exists), update value.
       entries[index].value = value;
+      entries[index].isFile = isFile;
       return entries[index].key;
     }
 
@@ -117,6 +120,7 @@ static const char *ht_set_entry(ht_entry *entries, size_t capacity,
   }
   entries[index].key = (char *)key;
   entries[index].value = value;
+  entries[index].isFile = isFile;
   return key;
 }
 
@@ -137,7 +141,8 @@ static bool ht_expand(ht *table) {
   for (size_t i = 0; i < table->capacity; i++) {
     ht_entry entry = table->entries[i];
     if (entry.key != NULL) {
-      ht_set_entry(new_entries, new_capacity, entry.key, entry.value, NULL);
+      ht_set_entry(new_entries, new_capacity, entry.key, entry.value, NULL,
+                   entry.isFile);
     }
   }
 
@@ -148,7 +153,7 @@ static bool ht_expand(ht *table) {
   return true;
 }
 
-const char *ht_set(ht *table, const char *key, void *value) {
+const char *ht_set(ht *table, const char *key, void *value, bool isFile) {
   assert(value != NULL);
   if (value == NULL) {
     return NULL;
@@ -163,7 +168,7 @@ const char *ht_set(ht *table, const char *key, void *value) {
 
   // Set entry and update length.
   return ht_set_entry(table->entries, table->capacity, key, value,
-                      &table->length);
+                      &table->length, isFile);
 }
 
 size_t ht_length(ht *table) { return table->length; }
@@ -230,4 +235,18 @@ bool ht_delete(ht *table, const char *key) {
   }
 
   return true;
+}
+
+bool ht_is_file(ht *table, const char *key) {
+
+  uint64_t hash = hash_key(key);
+  size_t capacity_mask = table->capacity - 1;
+  size_t index = (size_t)(hash & (uint64_t)capacity_mask);
+
+  while (table->entries[index].key != NULL) {
+    if (strcmp(key, table->entries[index].key) == 0)
+      break;
+    index = (index + 1) & capacity_mask;
+  }
+  return table->entries[index].isFile;
 }
