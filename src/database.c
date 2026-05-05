@@ -103,6 +103,14 @@ bool set_ttl(ht *table, const char *key, uint32_t ttl_ms) {
   return true;
 }
 
+bool is_file(ht *table, const char *key) {
+  node *n = (node *)ht_get(table, key);
+  if (n == NULL)
+    return false;
+
+  return n->is_file;
+}
+
 bool delete_n(ht *table, const char *key) {
   // 1. Find the node in the Hash Table
   node *n = (node *)ht_get(table, key);
