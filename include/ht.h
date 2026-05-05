@@ -5,6 +5,23 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <sys/queue.h>
+#include <stdint.h>
+
+
+typedef struct ht_entry {
+  const char *key; // key is NULL if this slot is empty
+  void *value;
+} ht_entry;
+
+struct ht {
+  ht_entry *entries; // hash slots
+  size_t capacity;   // size of _entries array
+  size_t length;     // number of items in hash table
+};
+
+
+
 
 // Hash table structure: create with ht_create, free with ht_destroy.
 typedef struct ht ht;
@@ -23,7 +40,7 @@ void* ht_get(ht* table, const char* key);
 // be NULL). If not already present in table, key is copied to newly
 // allocated memory (keys are freed automatically when ht_destroy is
 // called). Return address of copied key, or NULL if out of memory.
-const char* ht_set(ht* table, const char* key, void* value,bool isFile);
+const char* ht_set(ht* table, const char* key, void* value);
 
 // Return number of items in hash table.
 size_t ht_length(ht* table);
@@ -48,6 +65,6 @@ bool ht_next(hti* it);
 
 bool ht_delete(ht* table, const char* key);
 
-bool ht_is_file(ht* table, const char* key);
+
 
 #endif // _HT_H
