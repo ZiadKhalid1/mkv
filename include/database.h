@@ -38,6 +38,9 @@ bool set_ttl(ht* table, const char* key, uint32_t ttl);
 char** search_t(ht* table, const char* s_str);
 
 
+bool is_file(ht* table, const char* key);
+
+
 
 
 
