@@ -16,5 +16,5 @@ void ttl_remove(node *node);
 int ttl_get_next_timeout(void);
 
 // Find and destroy all expired nodes
-void ttl_process_expirations(void);
+void ttl_process_expirations(ht* table);
 

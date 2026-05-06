@@ -35,7 +35,7 @@ void db_destroy(ht *table) {
   ht_destroy(table);
 }
 
-const char *set_v(ht *table, const char *key, void *value, bool is_file) {
+const char *set_n(ht *table, const char *key, void *value, bool is_file) {
   // 1. If the key already exists, we should delete the old node first!
   if (ht_get(table, key) != NULL) {
     delete_n(table, key);
@@ -52,7 +52,7 @@ const char *set_v(ht *table, const char *key, void *value, bool is_file) {
 
   // 3. STORE IT: Hand the pointer to the Hash Table
   // Notice we pass `new_node` as the third parameter!
-  ht_set(table, key, new_node);
+  ht_set(table, new_node->entry.key, new_node);
 
   // 4. STORE IT: Put it at the front of the LRU List (Most Recently Used)
   // For Hamdallah
@@ -127,7 +127,9 @@ bool delete_n(ht *table, const char *key) {
   //
   //
 
-  ttl_remove(n); // ttl API handles safely removing it from the timer queue
+  if (n->ttl > 0) {
+    ttl_remove(n);
+  }
 
   // 4. Clean up the hard drive (If it was a file)
   if (n->is_file) {
