@@ -1,4 +1,6 @@
-#include "helper.h"
+#include "../include/helper.h"
+#include "../include/ht.h"
+
 
 // Socket creation wrapper
 // Returns a socket descriptor or exits on failure
@@ -99,17 +101,31 @@ int make_listener(int port) {
     Listen(server_fd, BACKLOG);
     return server_fd;
 }
-int recv_all(int fd, void *buf, size_t len)
-{
+int recv_all(int fd, void *buf, size_t len) {
     size_t total = 0;
-    char  *ptr   = (char *)buf;
+    char *ptr = (char *)buf;
+    
     while (total < len) {
         ssize_t r = recv(fd, ptr + total, len - total, 0);
-        if (r == 0) { printf("[INFO] Client disconnected.\n"); return -1; }
-        if (r<0){
+        
+        if (r == 0) { 
+            printf("[INFO] Client disconnected.\n"); 
+            return -1; 
+        }
+        
+        if (r < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // No more data available right now, try again later
-                continue;
+                // Wait for socket to be readable
+                fd_set readfds;
+                FD_ZERO(&readfds);
+                FD_SET(fd, &readfds);
+                
+                int ret = select(fd + 1, &readfds, NULL, NULL, NULL);
+                if (ret < 0) {
+                    perror("select error");
+                    return -1;
+                }
+                continue;  // Retry recv
             }
             perror("recv error");
             return -1;
@@ -126,55 +142,147 @@ int recv_u32(int fd, uint32_t *out)
     *out = ntohl(net);
     return 0;
 }
-int send_response(int fd, uint8_t status, const char *data, uint32_t data_len)
-{
-    uint32_t len_net = htonl(data_len);
-    if (send_all(fd, &status, 1) < 0) return -1;
-    if (send_all(fd, &len_net, 4) < 0) return -1;
-    if (data_len > 0)
-        if (send_all(fd, data, data_len) < 0) return -1;
+int send_file(int client_fd, int file_fd, uint32_t file_size) {
+    uint32_t total = 0;
+    while (total < file_size) {
+        uint32_t read_bytes = (file_size - total > CHUNK_SIZE) ? CHUNK_SIZE : file_size - total;
+        char chunk[CHUNK_SIZE];
+        
+        ssize_t r = read(file_fd, chunk, (size_t)read_bytes);
+        if (r < 0) {
+            perror("read file error");
+            return -1;
+        }
+        if (r == 0) {
+            // EOF reached before expected file_size
+            fprintf(stderr, "EOF reached prematurely\n");
+            return -1;
+        }
+        
+        if (send_all(client_fd, chunk, (size_t)r) < 0) return -1;
+        total += (size_t)r;
+    }
     return 0;
 }
-int send_all(int fd, const void *buf, size_t len)
-{
-    size_t      total = 0;
-    const char *ptr   = (const char *)buf;
+/* ------------------------------------------------------------------ */
+
+int send_response(int client_fd, uint8_t status, bool isafile, const char *data, uint32_t data_len) {
+    if (!data) {
+        perror("send_response: data is NULL");
+        return -1;
+    }
+    
+    uint32_t len_net = htonl(data_len);
+    if (send_all(client_fd, &status, 1) < 0) return -1;
+    if (send_all(client_fd, &len_net, 4) < 0) return -1;
+    
+    if (isafile) {
+        int file_fd = open(data, O_RDONLY);
+        if (file_fd < 0) {
+            perror("open file for sending error");
+            return -1;
+        }
+        if (send_file(client_fd, file_fd, data_len) < 0) {
+            close(file_fd);
+            return -1;
+        }
+        close(file_fd);
+    } else {
+        if (send_all(client_fd, data, data_len) < 0) return -1;
+    }
+    return 0;
+}
+
+int send_all(int client_fd, const void *buf, size_t len) {
+    size_t total = 0;
+    const char *ptr = (const char *)buf;
+    
     while (total < len) {
-        ssize_t s = send(fd, ptr + total, len - total, 0);
-        if (s <= 0) {
+        ssize_t s = send(client_fd, ptr + total, len - total, 0);
+        if (s < 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                // Wait for socket to be writable
+                fd_set writefds;
+                FD_ZERO(&writefds);
+                FD_SET(client_fd, &writefds);
+                
+                int ret = select(client_fd + 1, NULL, &writefds, NULL, NULL);
+                if (ret < 0) {
+                    perror("select error");
+                    return -1;
+                }
+                continue;  // Retry send
+            }
             perror("send error");
             return -1;
         }
-
+        
+        if (s == 0) {
+            return -1;  // Connection closed
+        }
+        
         total += (size_t)s;
     }
     return 0;
 }
-int recv_all_file(int fd, const char *save_path, uint32_t file_size)
-{
-    FILE *f = fopen(save_path, "wb");
-    if (!f) {
-        fprintf(stderr, "Cannot create file '%s': %s\n", save_path, strerror(errno));
-        return -1;
-    }
 
-    size_t total_received = 0;
-    char   chunk[CHUNK_SIZE];
-
-    while (total_received < file_size) {
-        size_t  want = file_size - total_received;
-        if (want > CHUNK_SIZE) want = CHUNK_SIZE;
-
-        ssize_t r = recv(fd, chunk, want, 0);
-        if (r <= 0) {
-            fclose(f);
+int write_all(int fd, const void *buf, size_t len) {
+    size_t total = 0;
+    const char *ptr = (const char *)buf;
+    
+    while (total < len) {
+        ssize_t s = write(fd, ptr + total, len - total);
+        if (s < 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                // Wait for socket to be writable
+                fd_set writefds;
+                FD_ZERO(&writefds);
+                FD_SET(fd, &writefds);
+                
+                int ret = select(fd + 1, NULL, &writefds, NULL, NULL);
+                if (ret < 0) {
+                    perror("select error");
+                    return -1;
+                }
+                continue;  // Retry write
+            }
+            perror("write error");
             return -1;
         }
-
-        fwrite(chunk, 1, (size_t)r, f);
-        total_received += (size_t)r;
+        
+        if (s == 0) {
+            return -1;  // Connection closed
+        }
+        
+        total += (size_t)s;
     }
+    return 0;
+}
 
-    fclose(f);
+int recv_file(int client_fd, const char *save_path, uint32_t file_size) {
+    int fd = open(save_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        perror("open file for writing error");
+        return -1;
+    }
+    
+    uint32_t total = 0;
+    char buffer[CHUNK_SIZE];
+    while (total < file_size) {
+         size_t want = file_size - total;
+        if (want > CHUNK_SIZE) want = CHUNK_SIZE;
+        if (recv_all(client_fd, buffer, want) < 0) {
+            close(fd);
+            return -1;
+        }
+    if (write_all(fd, buffer, want) < 0) {
+            close(fd);
+            return -1;
+        }
+        
+        total += (size_t)want;
+    }
+    
+    close(fd);
     return 0;
 }

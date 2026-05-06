@@ -1,101 +1,27 @@
-#include "helper.h"
-#include "ht.h"
+#include "../include/helper.h"
+#include "../include/ttl.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <errno.h>
 
-/*POSIX LIBRARIES USED*/
-#include <unistd.h>
-#include <fcntl.h>
-#include <pthread.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <sys/epoll.h>
-#include <sys/stat.h>
 
-/*--------------------------------------------------------*//* will point to our hash table instance */
-
-#define DEFAULT_PORT   6379
-#define BACKLOG SOMAXCONN
-#define MAX_CLIENTS 10000 
-/* Command type bytes sent on the wire */
-#define CMD_SET        0x01
-#define CMD_SETFILE    0x02
-#define CMD_GET        0x03
-#define CMD_GETFILE    0x04
-#define CMD_DEL        0x05
-#define CMD_EXPIRE     0x06
-#define CMD_SEARCH     0x07
-/* Response status bytes */
-#define STATUS_OK      0x00
-#define STATUS_ERR     0xFF
-/* ANSII color codes for pretty terminal output */
-#define COL_RESET    
-#define COL_RED     
-#define COL_GREEN   
-#define COL_YELLOW  
-#define COL_CYAN    
-#define COL_BOLD 
-/* ------------------------------------------------------------------ */
-              
-#define MAX_KEY_LEN    256
-#define MAX_VAL_LEN    4096
-#define MAX_PATH_LEN   512
-/* ------------------------------------------------------------------ */
-#ifndef FILE_STORE_DIR
-#define FILE_STORE_DIR "store/files"
-#endif
 
 ht *global_table = NULL;
-
-/*requestes struct */ 
-typedef struct {
-    uint8_t  type;
-    char    *key;
-    uint32_t key_len;
-
-    char    *value;      /* SET string or SETFILE bytes */
-    uint32_t val_len;
-
-    char    *path;       /* optional: GETFILE save path (if you keep this design) */
-    uint32_t path_len;
-
-    uint32_t ttl;        /* EXPIRE seconds */
-} Request;
-/* ------------------------------------------------------------------ */
-
-
 /*functions prototype*/
 static  int parse_request(int client_fd, Request *req);
 static void free_request(Request *req);
-static int read_bytes_or_fail(int fd, char *buf, size_t len);
 static void epoll_loop(int server_fd);
 static int handle_client(int client_fd);
 static void cleanup(void);
 static  uint64_t fnv1a64(const char *s);
 static int ensure_dir(const char *dir);
 static int ensure_store_dirs(void);
-static void build_file_path(char out[], size_t out_sz, const char *key);
 static void delete_if_file_value(char *old);
 static int store_set_string(const char *key, const char *value);
 static int store_set_file(int client_fd, const char *key, uint32_t file_size);
-static int store_get_string(const char *key, const char **out_val);
-static int store_get_file(const char *key, char **out_buf, uint32_t *out_len);
+static int get_string(const char *key, const char **out_val);
+static int get_file(const char *key, char **out_buf, uint32_t *out_len);
 
 
-/*--------------------------------------------------------------------------*/
-// distroy the hash table and free memory when server shuts down
-/*--------------------------------------------------------------------------*/
-void cleanup() {
-    hti it = ht_iterator(global_table);
-    while (ht_next(&it)) {
-        free(it.value); // Free the value string
-    }
-    ht_destroy(global_table); // Free the hash table itself
-}
+
 
 /* FNV-1a 64-bit hash for safe stable filenames */
 static uint64_t fnv1a64(const char *s) {
@@ -125,24 +51,15 @@ static int ensure_store_dirs(void) {
     return 0;
 }
 
-/* Build final path: store/files/<hash>.bin */
-static void build_file_path(char out[], size_t out_sz, const char *key) {
-    uint64_t h = fnv1a64(key);
-    snprintf(out, out_sz, "%s/%016llx.bin", FILE_STORE_DIR,(unsigned long long)h);
-}
-
-/* If old value is file:<path>, delete file */
-static void delete_if_file_value(char *old) {
-    if (!old) return;
-    if (strncmp(old, "file:", 5) == 0) {
-        remove(old + 5);
-    }
-}
 
 int main(int argc, char *argv[]) {
+    // Ignore SIGPIPE to prevent crashes when client drops connection during
+  signal(SIGPIPE, SIG_IGN);
+
+
     int port = DEFAULT_PORT;
 
-    global_table = ht_create();
+    global_table = db_init();
     if (!global_table) {
         fprintf(stderr, "Failed to create hash table\n");
         return EXIT_FAILURE;
@@ -165,10 +82,14 @@ int main(int argc, char *argv[]) {
     printf("Server is listening on port %d...\n", port);
 
     make_non_blocking(server_fd);
+    if (server_fd < 0) {
+        fprintf(stderr, "Failed to create server socket\n");
+        return EXIT_FAILURE;
+    }
 
     epoll_loop(server_fd);
 
-    cleanup();
+    db_destroy(global_table);
     return 0;
 }
 
@@ -275,22 +196,12 @@ void epoll_loop(int server_fd)
 static int store_set_string(const char *key, const char *value) {
     if (!key || !value) return -1;
 
-    /* Prefix "str:" */
     size_t vlen = strlen(value);
-    char *entry = (char *)malloc(vlen + 5); /* "str:" + value + '\0' */
+    char *entry = (char *)malloc(vlen + 1);
     if (!entry) return -1;
 
-    memcpy(entry, "str:", 4);
-    memcpy(entry + 4, value, vlen + 1);
-
-    char *old = (char *)ht_get(global_table, key);
-    if (old) {
-        // If old value is a file, delete the file
-        delete_if_file_value(old);
-        free(old);
-    }
-
-    if (!ht_set(global_table, key, entry)) {
+    memcpy(entry, value, vlen + 1);
+    if (!set_v(global_table, key, entry, false)) {
         free(entry);
         return -1;
     }
@@ -307,58 +218,23 @@ static int store_set_file(int client_fd, const char *key, uint32_t file_size) {
     snprintf(filepath, sizeof(filepath), "%s/%016llx.bin", FILE_STORE_DIR, (unsigned long long)h);
     snprintf(tmpfile, sizeof(tmpfile), "%s/%016llx.tmp", FILE_STORE_DIR, (unsigned long long)h);
 
-    FILE *f = fopen(tmpfile, "wb");
-    if (!f) { perror("fopen store_set_file"); return -1; }
-
-    size_t total_received = 0;
-    char chunk[4096]; // CHUNK_SIZE
-
-    /* Read the file in chunks from the socket directly to disk */
-    while (total_received < file_size) {
-        size_t want = file_size - total_received;
-        if (want > sizeof(chunk)) want = sizeof(chunk);
-
-        ssize_t r = recv(client_fd, chunk, want, 0);
-        if (r < 0) {
-            // Handle non-blocking socket busy wait
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue; 
-            fclose(f);
-            remove(tmpfile);
-            return -1;
-        } else if (r == 0) {
-            fclose(f);
-            remove(tmpfile);
-            return -1; // Client disconnected
-        }
-
-        fwrite(chunk, 1, (size_t)r, f);
-        total_received += (size_t)r;
+    if (recv_file(client_fd, tmpfile, file_size) < 0) {
+        remove(tmpfile);
+        return -1;
     }
 
-    if (fclose(f) != 0) { remove(tmpfile); return -1; }
-
-    /* Atomically rename temp file to final path */
     if (rename(tmpfile, filepath) != 0) {
         remove(tmpfile);
         perror("rename store_set_file");
         return -1;
     }
 
-    /* Add entry to hash table */
     size_t plen = strlen(filepath);
-    char *entry = (char *)malloc(plen + 6);
+    char *entry = (char *)malloc(plen + 1);
     if (!entry) { remove(filepath); return -1; }
-    
-    memcpy(entry, "file:", 5);
-    memcpy(entry + 5, filepath, plen + 1);
+    memcpy(entry, filepath, plen + 1);
 
-    char *old = (char *)ht_get(global_table, key);
-    if (old) {
-        if (strncmp(old, "file:", 5) == 0) remove(old + 5);
-        free(old);
-    }
-
-    if (!ht_set(global_table, key, entry)) {
+    if (!set_v(global_table, key, entry, true)) {
         free(entry);
         remove(filepath);
         return -1;
@@ -367,158 +243,29 @@ static int store_set_file(int client_fd, const char *key, uint32_t file_size) {
     return 0;
 }
 // retrieve a string value from the hash table under the given key
-static int store_get_string(const char *key, const char **out_val) {
-    char *entry = (char *)ht_get(global_table, key);
+static int get_string(const char *key, const char **out_val) {
+    char *entry = (char *)get_v(global_table, key);
     if (!entry) return -1;
-
-    if (strncmp(entry, "str:", 4) != 0) return -1; /* it's a file */
-
-    *out_val = entry + 4; /* skip "str:" */
+    if(is_file(global_table,key))  return -1; /* it's a file */
+    *out_val = entry ;
     return 0;
 }
 // retrieve a file's contents from the hash table under the given key
-static int store_get_file(const char *key, char **out_buf, uint32_t *out_len) {
-    char *entry = (char *)ht_get(global_table, key);
+static int get_file(const char *key, char ** file_path, uint32_t * file_size) {
+    char *entry = (char *)get_v(global_table, key);
     if (!entry) return -1;
 
-    if (strncmp(entry, "file:", 5) != 0) return -1; /* it's a string */
+    if (!is_file(global_table, key)) return -1; /* it's a string */
 
-    const char *filepath = entry + 5;
-
+     const char *path = entry;
+    // Validate file existence and size before returning path
     struct stat st;
-    if (stat(filepath, &st) != 0) return -1;
+    if (stat(path, &st) != 0) return -1;// file doesn't exist 
     if (!S_ISREG(st.st_mode)) return -1;
     if (st.st_size < 0 || st.st_size > 0xFFFFFFFF) return -1;
-
-    uint32_t file_size = (uint32_t)st.st_size;
-
-    FILE *f = fopen(filepath, "rb");
-    if (!f) return -1;
-
-    size_t alloc_size = (file_size == 0) ? 1 : (size_t)file_size;
-    char *buf = (char *)malloc(alloc_size);
-    if (!buf) { fclose(f); return -1; }
-
-    if (file_size > 0) {
-        size_t r = fread(buf, 1, file_size, f);
-        if (r != (size_t)file_size) {
-            free(buf);
-            fclose(f);
-            return -1;
-        }
-    }
-
-    fclose(f);
-    *out_buf = buf;
-    *out_len = file_size;
-    return 0;
-}
-
-
-
-// Handle client request 
-/* rewritten handle_client using parser */
-int handle_client(int client_fd)
-{
-    Request req;
-    if (parse_request(client_fd, &req) < 0) {
-        const char *msg = "Malformed request";
-        send_response(client_fd, STATUS_ERR, msg, (uint32_t)strlen(msg));
-        free_request(&req);
-        return -1; /* close bad client */
-    }
-
-   switch (req.type) 
-   {
-
-    case CMD_SET: {
-    if (store_set_string(req.key, req.value ? req.value : "") == 0) {
-        const char *msg = "Key set";
-        send_response(client_fd, STATUS_OK, msg, (uint32_t)strlen(msg));
-    } else {
-        const char *msg = "Set failed";
-        send_response(client_fd, STATUS_ERR, msg, (uint32_t)strlen(msg));
-    }
-    break;
-      }
-
-    case CMD_SETFILE: {
-        /* Pass client_fd so the function reads directly from the socket */
-        if (store_set_file(client_fd, req.key, req.val_len) == 0) {
-            const char *msg = "File stored";
-            send_response(client_fd, STATUS_OK, msg, (uint32_t)strlen(msg));
-        } else {
-            const char *msg = "Store failed";
-            send_response(client_fd, STATUS_ERR, msg, (uint32_t)strlen(msg));
-        }
-        break;
-    }
-    
-
-    case CMD_GET: {
-    const char *val = NULL;
-    if (store_get_string(req.key, &val) == 0) {
-        send_response(client_fd, STATUS_OK, val, (uint32_t)strlen(val));
-    } else {
-        const char *msg = "Not found";
-        send_response(client_fd, STATUS_ERR, msg, (uint32_t)strlen(msg));
-    }
-    break;
-    }
-
-    case CMD_GETFILE: {
-    char *buf = NULL;
-    uint32_t len = 0;
-
-    if (store_get_file(req.key, &buf, &len) != 0) {
-        const char *msg = "Not found";
-        send_response(client_fd, STATUS_ERR, msg, (uint32_t)strlen(msg));
-        break;
-    }
-
-    
-    send_response(client_fd, STATUS_OK, buf, len);
-    free(buf);
-    break;
-    }
-
-    case CMD_DEL: {
-    char *old = (char *)ht_get(global_table, req.key);
-    if (!old) {
-        const char *msg = "Not found";
-        send_response(client_fd, STATUS_ERR, msg, (uint32_t)strlen(msg));
-        break;
-    }
-
-    if (ht_delete(global_table, req.key)) {
-        
-        delete_if_file_value(old);
-        free(old);
-
-        const char *msg = "Key deleted";
-        send_response(client_fd, STATUS_OK, msg, (uint32_t)strlen(msg));
-    } else {
-        const char *msg = "Delete failed";
-        send_response(client_fd, STATUS_ERR, msg, (uint32_t)strlen(msg));
-    }
-    break;
-    }
-
-case CMD_SEARCH:
-case CMD_EXPIRE: {
-    const char *msg = "Not implemented yet";
-    send_response(client_fd, STATUS_ERR, msg, (uint32_t)strlen(msg));
-    break;
-}
-
-default: {
-    const char *msg = "Unknown command";
-    send_response(client_fd, STATUS_ERR, msg, (uint32_t)strlen(msg));
-    break;
-}
-}
-
-    free_request(&req);
+    *file_path = strdup(path);
+    if (!*file_path) return -1;
+    *file_size = (uint32_t)st.st_size;
     return 0;
 }
 // parse client request from the socket into a Request struct 
@@ -527,20 +274,13 @@ static void free_request(Request *req) {
     if(req == NULL) return;
     if (req->key) free(req->key);
     if (req->value) free(req->value);
-    if (req->path) free(req->path);
 }
-static int read_bytes_or_fail(int fd, char *buf, size_t len) {
-    if (recv_all(fd, buf, len) < 0) {
-        return -1;
-    }
-    return 0;
-}
+
 static int parse_request(int client_fd, Request *req) {
     memset(req, 0, sizeof(*req));
 
     /* 1) type */
-    ssize_t r = recv(client_fd, &req->type, 1, 0);
-    if (r <= 0) return -1;
+    if (recv_all(client_fd, &req->type, 1) < 0) return -1;
 
     /* 2) key_len */
     if (recv_u32(client_fd, &req->key_len) != 0) return -1;
@@ -549,7 +289,7 @@ static int parse_request(int client_fd, Request *req) {
     /* 3) key bytes */
     req->key = (char *)malloc(req->key_len + 1);
     if (!req->key) return -1;
-    if (read_bytes_or_fail(client_fd, req->key, req->key_len) < 0) return -1;
+    if (recv_all(client_fd, req->key, req->key_len) < 0) return -1;
     req->key[req->key_len] = '\0';
 
     /* 4) command-specific payload */
@@ -560,7 +300,7 @@ static int parse_request(int client_fd, Request *req) {
 
             req->value = (char *)malloc(req->val_len + 1);
             if (!req->value) return -1;
-            if (read_bytes_or_fail(client_fd, req->value, req->val_len) < 0) return -1;
+            if (recv_all(client_fd, req->value, req->val_len) < 0) return -1;
             req->value[req->val_len] = '\0';
             break;
 
@@ -585,5 +325,103 @@ static int parse_request(int client_fd, Request *req) {
             return -1;
     }
 
+    return 0;
+}
+
+
+// Handle client request 
+/* rewritten handle_client using parser */
+int handle_client(int client_fd)
+{
+    Request req;
+    if (parse_request(client_fd, &req) < 0) {
+        const char *msg = "Malformed request";
+        send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+        free_request(&req);
+        return -1; /* close bad client */
+    }
+
+   switch (req.type) 
+   {
+
+    case CMD_SET: {
+    if (store_set_string(req.key, req.value ? req.value : "") == 0) {
+        const char *msg = "Key set";
+        send_response(client_fd, STATUS_OK, false, msg, (uint32_t)strlen(msg));
+    } else {
+        const char *msg = "Set failed";
+        send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+    }
+    break;
+      }
+
+    case CMD_SETFILE: {
+        /* Pass client_fd so the function reads directly from the socket */
+        if (store_set_file(client_fd, req.key, req.val_len) == 0) {
+            const char *msg = "File stored";
+            send_response(client_fd, STATUS_OK, false, msg, (uint32_t)strlen(msg));
+        } else {
+            const char *msg = "Store failed";
+            send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+        }
+        break;
+    }
+    
+
+    case CMD_GET: {
+    const char *val = NULL;
+    if (get_string(req.key, &val) == 0) {
+        send_response(client_fd, STATUS_OK, false, val, (uint32_t)strlen(val));
+    } else {
+        const char *msg = "Not found";
+        send_response(client_fd, STATUS_ERR,false ,msg, (uint32_t)strlen(msg));
+    }
+    break;
+    }
+
+    case CMD_GETFILE: {
+    char *file_path = NULL;
+    uint32_t file_size = 0;
+
+    if (get_file(req.key, &file_path, &file_size) != 0) {
+        const char *msg = "Not found";
+        send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+        break;
+    }
+
+    
+    send_response(client_fd, STATUS_OK, true, file_path, file_size);
+    free(file_path); // free the duplicated file path string from hash table
+    break;
+    }
+
+    case CMD_DEL:
+     {
+     if (delete_n(global_table, req.key)) {
+        
+        const char *msg = "Key deleted";
+        send_response(client_fd, STATUS_OK, false, msg, (uint32_t)strlen(msg));
+    } else {
+        const char *msg = "these key not found";
+        send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+    }
+    break;
+    }
+
+case CMD_SEARCH:
+case CMD_EXPIRE: {
+    const char *msg = "Not implemented yet";
+    send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+    break;
+}
+
+default: {
+    const char *msg = "Unknown command";
+    send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+    break;
+}
+}
+
+    free_request(&req);
     return 0;
 }
