@@ -2,11 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+LRU_list* LRU;
 
 ht *db_init() {
   ttl_init();
   // inialize lru linkedlist
-  // For Hamdallah
+  LRU =  LRU_linked_list_create();
   //
 
   return ht_create();
@@ -33,6 +34,9 @@ void db_destroy(ht *table) {
 
   // 4. Now that the table is empty, it is safe to destroy the container!
   ht_destroy(table);
+
+    // destroy linkedlist
+  LRU_linked_list_deleteLRU(LRU);
 }
 
 const char *set_n(ht *table, const char *key, void *value, bool is_file) {
@@ -55,13 +59,7 @@ const char *set_n(ht *table, const char *key, void *value, bool is_file) {
   ht_set(table, new_node->entry.key, new_node);
 
   // 4. STORE IT: Put it at the front of the LRU List (Most Recently Used)
-  // For Hamdallah
-  //
-  //
-  //
-  //
-  //
-  //
+  new_node->LRU_node = LRU_linked_list_createNode(LRU,new_node);
 
   return new_node->entry.key;
 }
@@ -76,12 +74,8 @@ void *get_v(ht *table, const char *key) {
   }
 
   // 2. Change place in LRU Linked List!
-  // Remove it from its current spot...
-  // For Hamdallah
-  //
-  // ...and instantly put it at the very front!
-  //
-  //
+  LRU_linked_list_deleteNode(n->LRU_node); // remove
+  n->LRU_node = LRU_linked_list_createNode(LRU,n); // add at front
 
   // 3. Return the actual string/file path to the user
   return n->entry.value;
@@ -123,7 +117,7 @@ bool delete_n(ht *table, const char *key) {
   ht_delete(table, key);
 
   // 3. Unhook it from the Linked Lists!
-  // For Hamadllah
+  LRU_linked_list_deleteNode(n->LRU_node);
   //
   //
 
