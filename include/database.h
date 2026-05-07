@@ -3,6 +3,7 @@
 
 #include "ht.h"
 #include <stdint.h>
+typedef struct LRU_list_Node LRU_list_Node;
 
 
 
@@ -10,7 +11,8 @@ typedef struct node{
   ht_entry entry;
   bool is_file;
   uint32_t ttl;
-  TAILQ_ENTRY(node) lru_link;  // Generates *prev and *next for the LRU list
+    //LRU node 
+  LRU_list_Node* LRU_node;
   TAILQ_ENTRY(node) ttl_link;
 }node ;
 
