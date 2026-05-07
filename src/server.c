@@ -7,11 +7,9 @@ static int parse_request(int client_fd, Request *req);
 static void free_request(Request *req);
 static void epoll_loop(int server_fd);
 static int handle_client(int client_fd);
-static void cleanup(void);
 static uint64_t fnv1a64(const char *s);
 static int ensure_dir(const char *dir);
 static int ensure_store_dirs(void);
-static void delete_if_file_value(char *old);
 static int store_set_string(const char *key, const char *value);
 static int store_set_file(int client_fd, const char *key, uint32_t file_size);
 static int get_string(const char *key, const char **out_val);
@@ -115,7 +113,8 @@ void epoll_loop(int server_fd) {
   }
 
   while (1) {
-    int nfds = epoll_wait(epfd, events, MAX_CLIENTS, -1);
+    int timeout = ttl_get_next_timeout();
+    int nfds = epoll_wait(epfd, events, MAX_CLIENTS, timeout);
     if (nfds < 0) {
       if (errno == EINTR)
         continue; // interrupted by signal
@@ -174,6 +173,7 @@ void epoll_loop(int server_fd) {
         }
       }
     }
+    ttl_process_expirations(global_table);
   }
 
   Close(epfd);
@@ -420,10 +420,19 @@ int handle_client(int client_fd) {
     break;
   }
 
-  case CMD_SEARCH:
-  case CMD_EXPIRE: {
+  case CMD_SEARCH: {
     const char *msg = "Not implemented yet";
     send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+    break;
+  }
+  case CMD_EXPIRE: {
+    if (set_ttl(global_table, req.key, req.ttl)) {
+      const char *msg = "the key will removed after the ttl";
+      send_response(client_fd, STATUS_OK, false, msg, (uint32_t)strlen(msg));
+    } else {
+      const char *msg = "these key not found";
+      send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+    }
     break;
   }
 

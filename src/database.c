@@ -47,7 +47,7 @@ const char *set_n(ht *table, const char *key, void *value, bool is_file) {
   }
 
   // 2. CREATE THE NODE: Allocate memory for it on the Heap
-  node *new_node = malloc(sizeof(node));
+  node *new_node = calloc(1, sizeof(node));
 
   // Fill in the data based on your struct
   new_node->entry.key = strdup(key); // We own the key string
@@ -90,7 +90,6 @@ bool set_ttl(ht *table, const char *key, uint32_t ttl_ms) {
     return false; // Key doesn't exist!
   }
 
-  n->ttl = ttl_ms;
 
   // Send it to your TTL subsystem (which you defined in ttl.h)
   ttl_add(n, ttl_ms);

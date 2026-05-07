@@ -20,6 +20,10 @@ long long get_now_ms(void) {
 }
 
 void ttl_add(node *entry, long long ttl_ms) {
+  // If the node already had a TTL, remove it from the list before re-adding it
+  // This prevents corrupting the TAILQ if we call EXPIRE twice on the same key.
+  ttl_remove(entry);
+
   entry->ttl = get_now_ms() + ttl_ms;
 
   // Scan and insert in sorted order
@@ -34,8 +38,15 @@ void ttl_add(node *entry, long long ttl_ms) {
 }
 
 void ttl_remove(node *entry) {
-  // Because it is doubly-linked, this is an instant O(1) operation
-  TAILQ_REMOVE(&hidden_ttl_head, entry, ttl_link);
+  // Only remove if it's actually in the list.
+  // TAILQ_ENTRY uses internal pointers; if they are NULL, it's not in the list.
+  if (entry->ttl_link.tqe_next != NULL || entry->ttl_link.tqe_prev != NULL) {
+    TAILQ_REMOVE(&hidden_ttl_head, entry, ttl_link);
+    // Zero the links so we don't try to remove it again.
+    entry->ttl_link.tqe_next = NULL;
+    entry->ttl_link.tqe_prev = NULL;
+  }
+  entry->ttl = 0;
 }
 
 int ttl_get_next_timeout(void) {

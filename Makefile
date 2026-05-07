@@ -12,7 +12,7 @@ SRC_DIR = src
 BIN_DIR = bin
 
 # --- SERVER FILES ---
-SERVER_SRCS = $(SRC_DIR)/server.c $(SRC_DIR)/helper.c $(SRC_DIR)/ht.c $(SRC_DIR)/database.c $(SRC_DIR)/ttl.c
+SERVER_SRCS = $(SRC_DIR)/server.c $(SRC_DIR)/helper.c $(SRC_DIR)/ht.c $(SRC_DIR)/database.c $(SRC_DIR)/ttl.c $(SRC_DIR)/LRU_linked_list.c
 SERVER_OBJS = $(SERVER_SRCS:.c=.o)
 SERVER_BIN = $(BIN_DIR)/server
 
