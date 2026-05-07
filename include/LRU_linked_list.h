@@ -1,3 +1,6 @@
+#ifndef _LRU_LINKED_LIST_H
+#define _LRU_LINKED_LIST_H
+
 #define struct node node
 
 
@@ -33,3 +36,4 @@ void LRU_linked_list_deleteNode(LRU_list_Node* d_Node);
 // deletes all the LRU_linked_list
 void LRU_linked_list_deleteLRU(LRU_list* lru);
 
+#endif
