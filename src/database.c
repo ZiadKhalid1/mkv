@@ -1,4 +1,5 @@
 #include "../include/ttl.h"
+#include "../include/LRU_linked_list.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
