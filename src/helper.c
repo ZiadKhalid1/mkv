@@ -286,3 +286,257 @@ int recv_file(int client_fd, const char *save_path, uint32_t file_size) {
     close(fd);
     return 0;
 }
+
+
+//if successful return username if not return 'not found'
+void authentication(int new_socket, char * stats)
+ {
+    stats="not found";
+      
+    char buffer[1024] = {0};
+  
+        int valread = read(new_socket,
+                           buffer,
+                           sizeof(buffer) - 1);
+
+        if (valread <= 0) {
+
+            perror("read");
+
+            return;
+
+        }
+
+        // إضافة null character
+        buffer[valread] = '\0';
+
+        printf("Received: %s\n", buffer);
+
+        // تقسيم البيانات
+        char *saveptr;
+
+        char *command =
+            strtok_r(buffer, " \n", &saveptr);
+
+        char *username =
+            strtok_r(NULL, " \n", &saveptr);
+     
+        char *password =
+            strtok_r(NULL, " \n", &saveptr);
+
+        // التحقق من وجود command
+        if (command == NULL) {
+
+            send(new_socket,
+                 "Invalid input\n",
+                 strlen("Invalid input\n"),
+                 0);
+
+            return;
+        }
+
+        // التحقق من username و password
+        if ((strcmp(command, "login") == 0 ||
+             strcmp(command, "register") == 0)
+             &&
+            (username == NULL || password == NULL)) {
+
+            send(new_socket,
+                 "Username or password missing\n",
+                 strlen("Username or password missing\n"),
+                 0);
+
+            return;
+        }
+
+        // فتح قاعدة البيانات
+        sqlite3 *db;
+
+        if (sqlite3_open("users.db", &db) != SQLITE_OK) {
+
+            perror("Failed to open database");
+
+           return;
+        }
+
+        // SQLite Statement
+        sqlite3_stmt *stmt = NULL;
+
+        // =========================================
+        // LOGIN
+        // =========================================
+
+        if (strcmp(command, "login") == 0) {
+
+            const char *sql =
+                "SELECT * FROM users "
+                "WHERE username = ? AND password = ?";
+
+            if (sqlite3_prepare_v2(db,
+                                   sql,
+                                   -1,
+                                   &stmt,
+                                   NULL) != SQLITE_OK) {
+
+                perror("prepare failed");
+            }
+
+            // ربط username
+            sqlite3_bind_text(stmt,
+                              1,
+                              username,
+                              -1,
+                              SQLITE_TRANSIENT);
+
+            // ربط password
+            sqlite3_bind_text(stmt,
+                              2,
+                              password,
+                              -1,
+                              SQLITE_TRANSIENT);
+
+            int rc = sqlite3_step(stmt);
+
+            // لو وجد المستخدم
+            if (rc == SQLITE_ROW) {
+
+                printf("Login successful for user: %s\n",
+                       username);
+
+                char *message =
+                    "Login successful!\n";
+strcpy(stats,username);
+                send(new_socket,
+                     message,
+                     strlen(message),
+                     0);
+
+            } else {
+
+                printf("Login failed\n");
+
+                char *message =
+                    "Login failed: wrong username or password\n";
+
+                send(new_socket,
+                     message,
+                     strlen(message),
+                     0);
+            }
+        }
+
+        // =========================================
+        // REGISTER
+        // =========================================
+
+        else if (strcmp(command, "register") == 0) {
+
+            const char *sql =
+                "INSERT INTO users(username, password) "
+                "VALUES(?, ?)";
+
+            if (sqlite3_prepare_v2(db,
+                                   sql,
+                                   -1,
+                                   &stmt,
+                                   NULL) != SQLITE_OK) {
+
+                perror("prepare failed");
+            }
+
+            // ربط username
+            sqlite3_bind_text(stmt,
+                              1,
+                              username,
+                              -1,
+                              SQLITE_TRANSIENT);
+
+            // ربط password
+            sqlite3_bind_text(stmt,
+                              2,
+                              password,
+                              -1,
+                              SQLITE_TRANSIENT);
+
+            int rc = sqlite3_step(stmt);
+
+            // نجاح التسجيل
+            if (rc == SQLITE_DONE) {
+
+                printf("Registration successful\n");
+
+                char *message =
+                    "Registration successful\n";
+
+                send(new_socket,
+                     message,
+                     strlen(message),
+                     0);
+
+            } else {
+
+                printf("Registration failed\n");
+
+                char *message =
+                    "User may already exist\n";
+
+                send(new_socket,
+                     message,
+                     strlen(message),
+                     0);
+            }
+        }
+
+        // =========================================
+        // EXIT
+        // =========================================
+
+        else if (strcmp(command, "exit") == 0) {
+
+            char *message =
+                "Connection closed\n";
+
+            send(new_socket,
+                 message,
+                 strlen(message),
+                 0);
+
+            printf("Client disconnected\n");
+
+            close(new_socket);
+
+            sqlite3_close(db);
+
+            continue;
+        }
+
+        // =========================================
+        // INVALID COMMAND
+        // =========================================
+
+        else {
+
+            char *message =
+                "Invalid command\n";
+
+            send(new_socket,
+                 message,
+                 strlen(message),
+                 0);
+        }
+
+        // تنظيف الـ statement
+        if (stmt != NULL) {
+
+            sqlite3_finalize(stmt);
+        }
+
+        // غلق قاعدة البيانات
+        sqlite3_close(db);
+
+        // غلق اتصال العميل
+        close(new_socket);
+
+        printf("Connection closed\n");
+    return;
+ }
