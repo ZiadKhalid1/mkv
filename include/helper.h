@@ -81,7 +81,7 @@ int send_file(int client_fd, int file_fd, uint32_t file_size);
 int send_response(int fd, uint8_t status,bool is_file, const char *data, uint32_t data_len);
 int recv_file(int fd, const char *save_path, uint32_t file_size);
 int write_all(int fd, const void *buf, size_t len);
-
+void authentication(int new_socket, char * stats);
 
 
 #endif // HELPER_H
