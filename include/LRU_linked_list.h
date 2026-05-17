@@ -1,7 +1,7 @@
 #ifndef _LRU_LINKED_LIST_H
 #define _LRU_LINKED_LIST_H
 
-#define struct node node
+typedef struct node node;
 
 
 

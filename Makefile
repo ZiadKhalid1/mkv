@@ -26,10 +26,10 @@ CLIENT_BIN = $(BIN_DIR)/client
 # Default rule: Build both server and client
 all: $(SERVER_BIN) $(CLIENT_BIN)
 
-# Link the Server
+# Link the Server (-lpthread required for pthread usage)
 $(SERVER_BIN): $(SERVER_OBJS)
 	mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $(SERVER_OBJS) -o $(SERVER_BIN)
+	$(CC) $(CFLAGS) $(SERVER_OBJS) -o $(SERVER_BIN) -lpthread
 
 # Link the Client
 $(CLIENT_BIN): $(CLIENT_OBJS)
