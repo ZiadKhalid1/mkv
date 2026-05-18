@@ -139,8 +139,8 @@ void epoll_loop(int server_fd) {
           }
 
           ////
-          char stats[10] = {0};
-          authentication(client_fd, stats, sizeof(stats)); // 10 is the 
+          char stats[51] = {0};
+          authentication(client_fd, stats, sizeof(stats)); // 50 is the maximum username size 
 
           if (strcmp(stats,"not found")==0)
           {
