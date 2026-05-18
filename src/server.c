@@ -1,12 +1,13 @@
 #include "../include/helper.h"
 #include "../include/ttl.h"
+#include <pthread.h>
 
 ht *global_table = NULL;
 /*functions prototype*/
 static int parse_request(int client_fd, Request *req);
 static void free_request(Request *req);
 static void epoll_loop(int server_fd);
-static int handle_client(int client_fd);
+static int handle_client(int client_fd, int epfd);
 static uint64_t fnv1a64(const char *s);
 static int ensure_dir(const char *dir);
 static int ensure_store_dirs(void);
@@ -14,6 +15,8 @@ static int store_set_string(const char *key, const char *value);
 static int store_set_file(int client_fd, const char *key, uint32_t file_size);
 static int get_string(const char *key, const char **out_val);
 static int get_file(const char *key, char **out_buf, uint32_t *out_len);
+static void *setfile_thread(void *arg);
+static void *getfile_thread(void *arg);
 
 /* FNV-1a 64-bit hash for safe stable filenames */
 static uint64_t fnv1a64(const char *s) {
@@ -47,8 +50,64 @@ static int ensure_store_dirs(void) {
   return 0;
 }
 
+/* ------------------------------------------------------------------ */
+// Thread functions for file operations
+/* ------------------------------------------------------------------ */
+
+static void *setfile_thread(void *arg) {
+  FileThreadArg *a = (FileThreadArg *)arg;
+
+  if (store_set_file(a->client_fd, a->key, a->val_len) == 0) {
+    const char *msg = "File stored";
+    send_response(a->client_fd, STATUS_OK, false, msg, (uint32_t)strlen(msg));
+  } else {
+    const char *msg = "Store failed";
+    send_response(a->client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+  }
+
+  // Hand fd back to epoll so client can send more requests
+  struct epoll_event ev = {0};
+  ev.events  = EPOLLIN;
+  ev.data.fd = a->client_fd;
+  if (epoll_ctl(a->epfd, EPOLL_CTL_ADD, a->client_fd, &ev) < 0) {
+    perror("epoll_ctl re-add setfile");
+    close(a->client_fd); // only close if re-add fails
+  }
+
+  free(a);
+  return NULL;
+}
+
+static void *getfile_thread(void *arg) {
+  FileThreadArg *a = (FileThreadArg *)arg;
+
+  char    *file_path = NULL;
+  uint32_t file_size = 0;
+
+  if (get_file(a->key, &file_path, &file_size) == 0) {
+    send_response(a->client_fd, STATUS_OK, true, file_path, file_size);
+    free(file_path);
+  } else {
+    const char *msg = "Not found";
+    send_response(a->client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+  }
+
+  // Hand fd back to epoll so client can send more requests
+  struct epoll_event ev = {0};
+  ev.events  = EPOLLIN;
+  ev.data.fd = a->client_fd;
+  if (epoll_ctl(a->epfd, EPOLL_CTL_ADD, a->client_fd, &ev) < 0) {
+    perror("epoll_ctl re-add getfile");
+    close(a->client_fd); // only close if re-add fails
+  }
+
+  free(a);
+  return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+
 int main(int argc, char *argv[]) {
-  // Ignore SIGPIPE to prevent crashes when client drops connection during
   signal(SIGPIPE, SIG_IGN);
 
   int port = DEFAULT_PORT;
@@ -90,10 +149,9 @@ int main(int argc, char *argv[]) {
 }
 
 /* ------------------------------------------------------------------ */
-// functions  implementations
+// Epoll loop implementation
 /* ------------------------------------------------------------------ */
 
-// Epoll loop implementation
 void epoll_loop(int server_fd) {
   int epfd = epoll_create1(0);
   if (epfd < 0) {
@@ -103,7 +161,7 @@ void epoll_loop(int server_fd) {
 
   struct epoll_event ev, events[MAX_CLIENTS];
   memset(&ev, 0, sizeof(ev));
-  ev.events = EPOLLIN; // level-triggered
+  ev.events  = EPOLLIN;
   ev.data.fd = server_fd;
 
   if (epoll_ctl(epfd, EPOLL_CTL_ADD, server_fd, &ev) < 0) {
@@ -117,7 +175,7 @@ void epoll_loop(int server_fd) {
     int nfds = epoll_wait(epfd, events, MAX_CLIENTS, timeout);
     if (nfds < 0) {
       if (errno == EINTR)
-        continue; // interrupted by signal
+        continue;
       perror("epoll_wait");
       break;
     }
@@ -126,35 +184,16 @@ void epoll_loop(int server_fd) {
       int fd = events[i].data.fd;
 
       if (fd == server_fd) {
-        // Accept all pending connections (server_fd is non-blocking)
         while (1) {
           int client_fd = accept(server_fd, NULL, NULL);
+          
+          
           if (client_fd < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-              // no more pending clients right now
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
               break;
-            }
             perror("accept");
             break;
           }
-
-          ////
-          char stats[51] = {0};
-          authentication(client_fd, stats, sizeof(stats)); // 50 is the maximum username size 
-
-          if (strcmp(stats,"not found")==0)
-          {
-            printf("client failed to login \n");
-          }
-          else {
-            printf("client logged in succesfully \n");
-          }
-          //////////////////
-
-
-
-
-
 
           if (make_non_blocking(client_fd) < 0) {
             close(client_fd);
@@ -162,7 +201,7 @@ void epoll_loop(int server_fd) {
           }
 
           memset(&ev, 0, sizeof(ev));
-          ev.events = EPOLLIN; // keep level-triggered
+          ev.events  = EPOLLIN;
           ev.data.fd = client_fd;
 
           if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) < 0) {
@@ -170,28 +209,25 @@ void epoll_loop(int server_fd) {
             close(client_fd);
             continue;
           }
+
           printf("New client connected: fd %d\n", client_fd);
-
-          
-
         }
-
       } else {
-        // client socket readable or hangup/error
         if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
           epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
           close(fd);
           continue;
         }
 
-        // handle one request (or more if your handler loops internally)
-        // Make handle_client return: 0 keep-open, -1 close
-        int rc = handle_client(fd);
+        int rc = handle_client(fd, epfd);
 
         if (rc < 0) {
+          // error — remove and close
           epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
           close(fd);
         }
+        // rc == 0: keep fd open in epoll (normal commands)
+        // rc == 1: thread owns fd, already removed from epoll, will re-add when done
       }
     }
     ttl_process_expirations(global_table);
@@ -199,7 +235,10 @@ void epoll_loop(int server_fd) {
 
   Close(epfd);
 }
-// store a string value in the hash table under the given key
+
+/* ------------------------------------------------------------------ */
+// Store / get helpers
+/* ------------------------------------------------------------------ */
 
 static int store_set_string(const char *key, const char *value) {
   if (!key || !value)
@@ -217,7 +256,7 @@ static int store_set_string(const char *key, const char *value) {
   }
   return 0;
 }
-// store a file's contents in the hash table under the given key
+
 static int store_set_file(int client_fd, const char *key, uint32_t file_size) {
   if (!key)
     return -1;
@@ -258,30 +297,29 @@ static int store_set_file(int client_fd, const char *key, uint32_t file_size) {
 
   return 0;
 }
-// retrieve a string value from the hash table under the given key
+
 static int get_string(const char *key, const char **out_val) {
   char *entry = (char *)get_v(global_table, key);
   if (!entry)
     return -1;
   if (is_file(global_table, key))
-    return -1; /* it's a file */
+    return -1;
   *out_val = entry;
   return 0;
 }
-// retrieve a file's contents from the hash table under the given key
+
 static int get_file(const char *key, char **file_path, uint32_t *file_size) {
   char *entry = (char *)get_v(global_table, key);
   if (!entry)
     return -1;
 
   if (!is_file(global_table, key))
-    return -1; /* it's a string */
+    return -1;
 
   const char *path = entry;
-  // Validate file existence and size before returning path
   struct stat st;
   if (stat(path, &st) != 0)
-    return -1; // file doesn't exist
+    return -1;
   if (!S_ISREG(st.st_mode))
     return -1;
   if (st.st_size < 0 || st.st_size > 0xFFFFFFFF)
@@ -292,7 +330,10 @@ static int get_file(const char *key, char **file_path, uint32_t *file_size) {
   *file_size = (uint32_t)st.st_size;
   return 0;
 }
-// parse client request from the socket into a Request struct
+
+/* ------------------------------------------------------------------ */
+// Request parsing
+/* ------------------------------------------------------------------ */
 
 static void free_request(Request *req) {
   if (req == NULL)
@@ -306,17 +347,14 @@ static void free_request(Request *req) {
 static int parse_request(int client_fd, Request *req) {
   memset(req, 0, sizeof(*req));
 
-  /* 1) type */
   if (recv_all(client_fd, &req->type, 1) < 0)
     return -1;
 
-  /* 2) key_len */
   if (recv_u32(client_fd, &req->key_len) != 0)
     return -1;
   if (req->key_len == 0 || req->key_len > MAX_KEY_LEN)
     return -1;
 
-  /* 3) key bytes */
   req->key = (char *)malloc(req->key_len + 1);
   if (!req->key)
     return -1;
@@ -324,13 +362,12 @@ static int parse_request(int client_fd, Request *req) {
     return -1;
   req->key[req->key_len] = '\0';
 
-  /* 4) command-specific payload */
   switch (req->type) {
   case CMD_SET:
     if (recv_u32(client_fd, &req->val_len) != 0)
       return -1;
     if (req->val_len > MAX_VAL_LEN)
-      return -1; // Limit string size
+      return -1;
 
     req->value = (char *)malloc(req->val_len + 1);
     if (!req->value)
@@ -341,7 +378,6 @@ static int parse_request(int client_fd, Request *req) {
     break;
 
   case CMD_SETFILE:
-    /* Only read the file size, DO NOT read the file data into RAM here */
     if (recv_u32(client_fd, &req->val_len) != 0)
       return -1;
     break;
@@ -357,7 +393,6 @@ static int parse_request(int client_fd, Request *req) {
   case CMD_GET:
   case CMD_DEL:
   case CMD_SEARCH:
-    /* key only */
     break;
 
   default:
@@ -367,15 +402,20 @@ static int parse_request(int client_fd, Request *req) {
   return 0;
 }
 
+/* ------------------------------------------------------------------ */
 // Handle client request
-/* rewritten handle_client using parser */
-int handle_client(int client_fd) {
+// Returns:  0 = keep fd in epoll (normal)
+//          -1 = error, caller closes fd
+//           1 = thread owns fd (already DEL'd from epoll, will re-add)
+/* ------------------------------------------------------------------ */
+
+int handle_client(int client_fd, int epfd) {
   Request req;
   if (parse_request(client_fd, &req) < 0) {
     const char *msg = "Malformed request";
     send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
     free_request(&req);
-    return -1; /* close bad client */
+    return -1;
   }
 
   switch (req.type) {
@@ -392,15 +432,33 @@ int handle_client(int client_fd) {
   }
 
   case CMD_SETFILE: {
-    /* Pass client_fd so the function reads directly from the socket */
-    if (store_set_file(client_fd, req.key, req.val_len) == 0) {
-      const char *msg = "File stored";
-      send_response(client_fd, STATUS_OK, false, msg, (uint32_t)strlen(msg));
-    } else {
-      const char *msg = "Store failed";
+    FileThreadArg *a = malloc(sizeof(*a));
+    if (!a) {
+      const char *msg = "Out of memory";
       send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
+      free_request(&req);
+      return -1;
     }
-    break;
+    a->client_fd = client_fd;
+    a->epfd      = epfd;
+    a->val_len   = req.val_len;
+    strncpy(a->key, req.key, MAX_KEY_LEN);
+    a->key[MAX_KEY_LEN] = '\0';
+
+    // Remove from epoll BEFORE spawning — thread owns fd from here
+    epoll_ctl(epfd, EPOLL_CTL_DEL, client_fd, NULL);
+
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, setfile_thread, a) != 0) {
+      perror("pthread_create setfile");
+      free(a);
+      free_request(&req);
+      return -1; // caller will close fd
+    }
+    pthread_detach(tid);
+
+    free_request(&req);
+    return 1; // fd handed to thread
   }
 
   case CMD_GET: {
@@ -415,27 +473,41 @@ int handle_client(int client_fd) {
   }
 
   case CMD_GETFILE: {
-    char *file_path = NULL;
-    uint32_t file_size = 0;
-
-    if (get_file(req.key, &file_path, &file_size) != 0) {
-      const char *msg = "Not found";
+    FileThreadArg *a = malloc(sizeof(*a));
+    if (!a) {
+      const char *msg = "Out of memory";
       send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
-      break;
+      free_request(&req);
+      return -1;
     }
+    a->client_fd = client_fd;
+    a->epfd      = epfd;
+    a->val_len   = 0;
+    strncpy(a->key, req.key, MAX_KEY_LEN);
+    a->key[MAX_KEY_LEN] = '\0';
 
-    send_response(client_fd, STATUS_OK, true, file_path, file_size);
-    free(file_path); // free the duplicated file path string from hash table
-    break;
+    // Remove from epoll BEFORE spawning — thread owns fd from here
+    epoll_ctl(epfd, EPOLL_CTL_DEL, client_fd, NULL);
+
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, getfile_thread, a) != 0) {
+      perror("pthread_create getfile");
+      free(a);
+      free_request(&req);
+      return -1; // caller will close fd
+    }
+    pthread_detach(tid);
+
+    free_request(&req);
+    return 1; // fd handed to thread
   }
 
   case CMD_DEL: {
     if (delete_n(global_table, req.key)) {
-
       const char *msg = "Key deleted";
       send_response(client_fd, STATUS_OK, false, msg, (uint32_t)strlen(msg));
     } else {
-      const char *msg = "these key not found";
+      const char *msg = "Key not found";
       send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
     }
     break;
@@ -446,12 +518,13 @@ int handle_client(int client_fd) {
     send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
     break;
   }
+
   case CMD_EXPIRE: {
     if (set_ttl(global_table, req.key, req.ttl)) {
-      const char *msg = "the key will removed after the ttl";
+      const char *msg = "Key will be removed after the TTL";
       send_response(client_fd, STATUS_OK, false, msg, (uint32_t)strlen(msg));
     } else {
-      const char *msg = "these key not found";
+      const char *msg = "Key not found";
       send_response(client_fd, STATUS_ERR, false, msg, (uint32_t)strlen(msg));
     }
     break;

@@ -1,7 +1,6 @@
 #include "../include/helper.h"
 #include "../include/ht.h"
-#include <sqlite3.h>
-
+#include<sqlite3.h>
 
 // Socket creation wrapper
 // Returns a socket descriptor or exits on failure
@@ -290,9 +289,9 @@ int recv_file(int client_fd, const char *save_path, uint32_t file_size) {
 
 
 //if successful return username if not return 'not found'
-void authentication(int new_socket, char * stats,size_t stats_size)
+void authentication(int new_socket, char * stats)
  {
-    strncpy(stats, "not found", stats_size - 1);
+    stats="not found";
       
     char buffer[1024] = {0};
   
@@ -406,7 +405,7 @@ void authentication(int new_socket, char * stats,size_t stats_size)
 
                 char *message =
                     "Login successful!\n";
-                strncpy(stats, username , stats_size - 1);
+strcpy(stats,username);
                 send(new_socket,
                      message,
                      strlen(message),
@@ -508,7 +507,7 @@ void authentication(int new_socket, char * stats,size_t stats_size)
 
             sqlite3_close(db);
 
-         
+            continue;
         }
 
         // =========================================
@@ -535,7 +534,9 @@ void authentication(int new_socket, char * stats,size_t stats_size)
         // غلق قاعدة البيانات
         sqlite3_close(db);
 
+        // غلق اتصال العميل
+        close(new_socket);
+
         printf("Connection closed\n");
     return;
  }
-
