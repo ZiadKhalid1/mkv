@@ -3,6 +3,7 @@
 # ==========================================
 
 CC = gcc
+LIBS = -lsqlite3
 
 # Compiler flags
 CFLAGS = -Wall -Wextra -O2 -g -Iinclude
@@ -29,7 +30,7 @@ all: $(SERVER_BIN) $(CLIENT_BIN)
 # Link the Server (-lpthread required for pthread usage)
 $(SERVER_BIN): $(SERVER_OBJS)
 	mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $(SERVER_OBJS) -o $(SERVER_BIN) -lpthread
+	$(CC) $(CFLAGS) $(SERVER_OBJS) -o $(SERVER_BIN) $(LIBS) -lpthread
 
 # Link the Client
 $(CLIENT_BIN): $(CLIENT_OBJS)
