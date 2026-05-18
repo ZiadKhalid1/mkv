@@ -48,6 +48,8 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/select.h>
+#include <ctype.h>
+
 /* ------------------------------------------------------------------ */
 /*  Constants                                                           */
 /* ------------------------------------------------------------------ */
@@ -82,9 +84,12 @@
 #define COL_BOLD       "\033[1m"
 
 /* ------------------------------------------------------------------ */
+/*  Auth function declaration                                         */
+/* ------------------------------------------------------------------ */
+int Auth(int fd);
+/* ------------------------------------------------------------------ */
 /*  Data Structures                                                     */
 /* ------------------------------------------------------------------ */
-
 /* All information extracted from one line of user input */
 typedef struct {
     uint8_t  type;                    /* CMD_* constant                */
@@ -683,6 +688,17 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // authentication
+     if (Auth(fd) == 0)
+     {
+        printf("Login faild, connection will be terminated. \n");
+        return -1 ;
+     } 
+	
+
+
+
+
     printf("%s%sConnected!%s  Type HELP for available commands.\n\n",
            COL_BOLD, COL_GREEN, COL_RESET);
 
@@ -741,4 +757,78 @@ while (1) {
     close(fd);
     printf("%sDisconnected. Goodbye!%s\n", COL_CYAN, COL_RESET);
     return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* ------------------------------------------------------------------ */
+/*  Auth function — takes file directory and asks for  credintials    */
+/* ------------------------------------------------------------------ */
+
+// returns 1 of login successfully 0 if not!
+ int Auth(int fd)
+{
+
+char buffer[1024] = {0};
+
+
+while (1)// will be broken if user typed exit
+{
+
+     printf("Enter command\n"
+               "login username password\n"
+               "register username password)\n"
+               "or exit\n"
+               ":>"); // Prompt the user to enter a command
+fgets(buffer,sizeof(buffer),stdin);
+
+buffer[strcspn(buffer,"\n")]=0;
+// تحويل كل الحروف الى حروف صغيرة
+for(int i=0; buffer[i];i++)
+{
+    buffer[i]=tolower(buffer[i]);
+}
+if(strcmp(buffer,"exit")==0)
+{
+    printf("Exiting.....\n");
+    return 0; 
+}
+else if(strcmp(buffer,"login")==0 || strcmp(buffer,"register")==0)
+{
+    char username[100],passwor[100];
+    if(  scanf("%s %s", username,passwor)!=2)
+    {
+        printf("invalid username or password \n");
+        continue;
+    }
+    printf("command sent ......\n\n");
+}
+
+        //send command to server
+        send(fd,buffer,strlen(buffer),0);
+        //recive the server's response
+        ssize_t n =read(fd,buffer,1024);
+        printf("Server: %s\n",buffer);
+        if (strstr(buffer, "successful") != NULL)
+    {
+
+        return 1;
+    }
+
+    return 0;
+}
+
+
+
+
 }

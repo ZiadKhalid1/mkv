@@ -138,6 +138,24 @@ void epoll_loop(int server_fd) {
             break;
           }
 
+          ////
+          char stats[10] = {0};
+          authentication(client_fd, stats, sizeof(stats)); // 10 is the 
+
+          if (strcmp(stats,"not found")==0)
+          {
+            printf("client failed to login \n");
+          }
+          else {
+            printf("client logged in succesfully \n");
+          }
+          //////////////////
+
+
+
+
+
+
           if (make_non_blocking(client_fd) < 0) {
             close(client_fd);
             continue;
@@ -152,9 +170,12 @@ void epoll_loop(int server_fd) {
             close(client_fd);
             continue;
           }
-
           printf("New client connected: fd %d\n", client_fd);
+
+          
+
         }
+
       } else {
         // client socket readable or hangup/error
         if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
