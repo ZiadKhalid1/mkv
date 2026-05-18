@@ -50,6 +50,16 @@
 #endif
 
 
+
+
+/* ------------------------------------------------------------------ */
+/*Thread argument */ 
+typedef struct {
+    int      client_fd;
+    int      epfd;
+    char     key[MAX_KEY_LEN + 1];
+    uint32_t val_len;
+} FileThreadArg;
 /* ------------------------------------------------------------------ */
 /*requestes struct */ 
 typedef struct {
