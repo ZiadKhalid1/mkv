@@ -186,8 +186,6 @@ void epoll_loop(int server_fd) {
       if (fd == server_fd) {
         while (1) {
           int client_fd = accept(server_fd, NULL, NULL);
-          
-          
           if (client_fd < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
               break;
@@ -195,6 +193,20 @@ void epoll_loop(int server_fd) {
             break;
           }
 
+
+           ////
+          char stats[51] = {0};
+          authentication(client_fd, stats, sizeof(stats)); // 50 is the maximum username size 
+
+          if (strcmp(stats,"not found")==0)
+          {
+            printf("client failed to login \n");
+          }
+          else {
+            printf("client logged in succesfully \n");
+          }
+          //////////////////
+          
           if (make_non_blocking(client_fd) < 0) {
             close(client_fd);
             continue;
